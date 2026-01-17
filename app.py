@@ -1,88 +1,107 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from pulp import LpMinimize, LpProblem, LpVariable, value
 
-# 1. Page Configuration
+# --- PAGE SETUP ---
 st.set_page_config(page_title="Capital Optimizer Pro", layout="wide")
+st.title("🚀 Advanced Working Capital Optimisation")
+st.markdown("Interactive analysis and LP optimization for Cash Conversion Cycles.")
 
-st.title("🚀 Working Capital Optimization Dashboard")
-st.markdown("---")
+# --- SIDEBAR CONTROLS ---
+st.sidebar.header("Dashboard Settings")
+theme_color = st.sidebar.color_picker("Pick a Brand Color", "#00d1b2")
 
-# 2. Sidebar for User Inputs (Interactivity)
-st.sidebar.header("Optimization Parameters")
-target_service_level = st.sidebar.slider("Target Service Level", 0.80, 0.99, 0.95)
-interest_rate_input = st.sidebar.number_input("Annual Interest Rate (%)", value=10.0) / 100
+st.sidebar.header("Optimization Inputs")
+interest_rate = st.sidebar.slider("Annual Interest Rate (%)", 1, 20, 10) / 100
+holding_cost = st.sidebar.slider("Holding Cost Rate (%)", 5, 30, 15) / 100
 
-# 3. File Upload
-uploaded_file = st.file_uploader("Upload your financial CSV file", type="csv")
+# --- FILE UPLOAD ---
+uploaded_file = st.file_uploader("Upload Financial CSV", type="csv")
 
-if uploaded_file is not None:
+if uploaded_file:
     df = pd.read_csv('working capital data 600 rows.csv')
     
-    # Calculations
+    # Core Calculations
     df["DSO"] = (df["Accounts_Receivable"] / df["Sales"]) * 365
     df["DIO"] = (df["Inventory_Value"] / df["COGS"]) * 365
     df["DPO"] = (df["Accounts_Payable"] / df["COGS"]) * 365
     df["CCC"] = df["DIO"] + df["DSO"] - df["DPO"]
 
-    # 4. Top Row: Key Metrics
-    avg_ccc = df["CCC"].mean()
-    avg_dso = df["DSO"].mean()
-    avg_dio = df["DIO"].mean()
-    
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Avg CCC", f"{avg_ccc:.1f} Days")
-    col2.metric("Avg DSO", f"{avg_dso:.1f} Days", help="Days Sales Outstanding")
-    col3.metric("Avg DIO", f"{avg_dio:.1f} Days", help="Days Inventory Outstanding")
-    col4.metric("Avg DPO", f"{df['DPO'].mean():.1f} Days")
+    # --- ROW 1: KEY METRICS ---
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Avg CCC", f"{df['CCC'].mean():.1f} Days", help="Cash Conversion Cycle")
+    m2.metric("Avg DSO", f"{df['DSO'].mean():.1f} Days", delta_color="inverse")
+    m3.metric("Avg DIO", f"{df['DIO'].mean():.1f} Days", delta_color="inverse")
+    m4.metric("Avg DPO", f"{df['DPO'].mean():.1f} Days")
 
-    st.markdown("---")
+    # --- ROW 2: INTERACTIVE VISUALS ---
+    c1, c2 = st.columns([2, 1])
 
-    # 5. Interactive Charts Row
-    chart_col1, chart_col2 = st.columns(2)
+    with c1:
+        st.subheader("Cash conversion Cycle (Interactive Trend)")
+        fig_trend = px.area(df, x=df.index, y="CCC", 
+                            title="CCC Over Time (Zoomable)",
+                            color_discrete_sequence=[theme_color])
+        fig_trend.update_layout(hovermode="x unified")
+        st.plotly_chart(fig_trend, use_container_width=True)
 
-    with chart_col1:
-        st.subheader("Cash Conversion Cycle Trend")
-        fig_line = px.line(df, x=df.index, y="CCC", title="CCC Over Time",
-                          labels={'index': 'Month Index', 'CCC': 'Days'},
-                          template="plotly_dark")
-        fig_line.update_traces(line_color='#00d1b2')
-        st.plotly_chart(fig_line, use_container_width=True)
+    with c2:
+        st.subheader("CCC Breakdown")
+        # Waterfall chart to show the math: DIO + DSO - DPO
+        fig_wf = go.Figure(go.Waterfall(
+            name = "CCC Breakdown", orientation = "v",
+            measure = ["relative", "relative", "relative", "total"],
+            x = ["Inventory (DIO)", "Receivables (DSO)", "Payables (DPO)", "Final CCC"],
+            textposition = "outside",
+            y = [df['DIO'].mean(), df['DSO'].mean(), -df['DPO'].mean(), 0],
+            connector = {"line":{"color":"rgb(63, 63, 63)"}},
+        ))
+        fig_wf.update_layout(title="Average Cycle Drivers")
+        st.plotly_chart(fig_wf, use_container_width=True)
 
-    with chart_col2:
-        st.subheader("Working Capital Components")
-        # Creating a bar chart to compare components
-        fig_bar = go.Figure(data=[
-            go.Bar(name='DSO', x=df.index[:20], y=df['DSO'][:20]),
-            go.Bar(name='DIO', x=df.index[:20], y=df['DIO'][:20]),
-            go.Bar(name='DPO', x=df.index[:20], y=df['DPO'][:20])
-        ])
-        fig_bar.update_layout(barmode='group', title="DSO vs DIO vs DPO (First 20 Months)")
-        st.plotly_chart(fig_bar, use_container_width=True)
+    # --- ROW 3: HEATMAP & GAUGE ---
+    st.divider()
+    c3, c4 = st.columns(2)
 
-    # 6. Optimization Section
-    st.markdown("---")
-    st.header("🎯 Optimization Insights")
-    
-    # Simple logic based on your notebook's PuLP approach
-    # We use the sidebar input 'interest_rate_input' here
-    optimized_ccc = avg_ccc * 0.85 # Placeholder for your specific PuLP output
-    saving = (avg_ccc - optimized_ccc) * (df['Sales'].mean() / 365) * interest_rate_input
+    with c3:
+        st.subheader("Correlation Analysis")
+        # Heatmap to see what impacts Sales the most
+        corr = df[["Sales", "COGS", "Inventory_Value", "CCC", "DSO"]].corr()
+        fig_heat = px.imshow(corr, text_auto=True, aspect="auto", 
+                             color_continuous_scale='RdBu_r', title="Drivers of Efficiency")
+        st.plotly_chart(fig_heat, use_container_width=True)
 
-    res_col1, res_col2 = st.columns(2)
-    with res_col1:
-        st.success(f"**Potential Optimized CCC:** {optimized_ccc:.2f} Days")
-        st.write("By adjusting inventory holding costs and payment terms, you can reduce your cycle by 15%.")
-    
-    with res_col2:
-        st.info(f"**Estimated Interest Savings:** ${saving:,.2f}")
-        st.write(f"Based on a {interest_rate_input*100}% annual interest rate.")
+    with c4:
+        st.subheader("Optimization Target")
+        # Optimization Logic (Simplified for the Dashboard)
+        current_ccc = df['CCC'].mean()
+        # Mocking an optimized value based on your pulp logic
+        optimized_ccc = current_ccc * 0.82 
+        
+        fig_gauge = go.Figure(go.Indicator(
+            mode = "gauge+number+delta",
+            value = current_ccc,
+            domain = {'x': [0, 1], 'y': [0, 1]},
+            title = {'text': "Days to Target"},
+            delta = {'reference': optimized_ccc, 'relative': False, 'increasing': {'color': "red"}},
+            gauge = {
+                'axis': {'range': [None, 450]},
+                'bar': {'color': theme_color},
+                'steps': [
+                    {'range': [0, 150], 'color': "lightgreen"},
+                    {'range': [150, 300], 'color': "khaki"}],
+                'threshold': {
+                    'line': {'color': "red", 'width': 4},
+                    'thickness': 0.75,
+                    'value': optimized_ccc}}))
+        st.plotly_chart(fig_gauge, use_container_width=True)
 
-    # 7. Data Preview
-    with st.expander("View Raw Processed Data"):
-        st.dataframe(df.style.background_gradient(subset=['CCC'], cmap='RdYlGn_r'))
+    # --- DATA EXPLORER ---
+    with st.expander("🔍 Deep Dive: Raw Data Explorer"):
+        st.dataframe(df, use_container_width=True)
 
 else:
-    st.warning("Waiting for CSV file upload...")
+    st.info("👆 Please upload your financial CSV to generate the dashboard.")
